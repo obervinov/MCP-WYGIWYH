@@ -7,9 +7,9 @@ Copyright (c) 2025 ReNewator.com
 All rights reserved.
 """
 
-import os
 import json
 import base64
+from contextvars import ContextVar
 from typing import Any
 import yaml
 import httpx
@@ -18,16 +18,78 @@ from mcp.types import Tool, TextContent
 from pydantic import AnyUrl
 import asyncio
 
-API_BASE_URL = "https://your-WYGIWYH.com"
+from env_config import get_env
 
-def get_auth_header() -> str:
-    """Get the current Basic auth header from environment variables."""
-    api_username = os.getenv("API_USERNAME", "")
-    api_password = os.getenv("API_PASSWORD", "")
-    
-    if api_username and api_password:
-        return base64.b64encode(f"{api_username}:{api_password}".encode()).decode()
-    return ""
+API_BASE_URL = get_env("API_BASE_URL", "https://your-WYGIWYH.com").rstrip("/")
+current_request_access_token: ContextVar[str | None] = ContextVar(
+    "current_request_access_token",
+    default=None,
+)
+current_request_claims: ContextVar[dict[str, Any] | None] = ContextVar(
+    "current_request_claims",
+    default=None,
+)
+
+def get_api_auth_mode() -> str:
+    return get_env("API_AUTH_MODE", "incoming_bearer").strip().lower()
+
+
+async def get_auth_header() -> str:
+    """Build the WYGIWYH API Authorization header from environment variables."""
+    auth_mode = get_api_auth_mode()
+
+    if auth_mode == "basic":
+        api_username = get_env("API_USERNAME")
+        api_password = get_env("API_PASSWORD")
+
+        if api_username and api_password:
+            basic_auth = base64.b64encode(
+                f"{api_username}:{api_password}".encode()
+            ).decode()
+            return f"Basic {basic_auth}"
+        return ""
+
+    if auth_mode == "bearer":
+        bearer_token = get_env("API_BEARER_TOKEN").strip()
+        if bearer_token:
+            return f"Bearer {bearer_token}"
+        return ""
+
+    if auth_mode == "incoming_bearer":
+        bearer_token = current_request_access_token.get()
+        if bearer_token:
+            return f"Bearer {bearer_token}"
+        return ""
+
+    raise ValueError(
+        "Unsupported API_AUTH_MODE "
+        f"'{auth_mode}'. Use 'incoming_bearer', 'basic', or 'bearer'."
+    )
+
+
+def get_auth_error_message() -> str:
+    auth_mode = get_api_auth_mode()
+    if auth_mode == "incoming_bearer":
+        return (
+            "Error: incoming Bearer token is required. Configure your MCP client to "
+            "authenticate with OAuth/OIDC and send Authorization: Bearer <access-token> "
+            "to the MCP server."
+        )
+    if auth_mode == "basic":
+        return (
+            "Error: WYGIWYH_MCP_API_USERNAME and WYGIWYH_MCP_API_PASSWORD "
+            "environment variables must be set when "
+            "WYGIWYH_MCP_API_AUTH_MODE=basic"
+        )
+    if auth_mode == "bearer":
+        return (
+            "Error: WYGIWYH_MCP_API_BEARER_TOKEN environment variable must be set "
+            "when WYGIWYH_MCP_API_AUTH_MODE=bearer"
+        )
+    return (
+        "Error: WYGIWYH_MCP_API_AUTH_MODE must be 'incoming_bearer', 'basic', "
+        "or 'bearer'"
+    )
 
 with open("attached_assets/WYGIWYH API (1)_1759581638933.yaml", "r", encoding="utf-8") as f:
     openapi_spec = yaml.safe_load(f)
@@ -46,20 +108,29 @@ async def get_tools_list():
         for tool in tools
     ]
 
-async def call_tool_internal(name: str, arguments: dict):
+async def call_tool_internal(
+    name: str,
+    arguments: dict,
+    incoming_access_token: str | None = None,
+    incoming_claims: dict[str, Any] | None = None,
+):
     """Call a tool directly (for HTTP transport)."""
-    from mcp.types import TextContent
-    # Call the existing call_tool function
-    result = await call_tool(name, arguments)
-    # Convert TextContent to dict
-    if result:
-        # Handle different result types
-        if isinstance(result, list) and len(result) > 0:
-            first_item = result[0]
-            if isinstance(first_item, TextContent):
-                return {"text": first_item.text}
-        return {"text": str(result)}
-    return {"error": "No response from tool"}
+    access_token_token = current_request_access_token.set(incoming_access_token)
+    claims_token = current_request_claims.set(incoming_claims)
+    try:
+        from mcp.types import TextContent
+
+        result = await call_tool(name, arguments)
+        if result:
+            if isinstance(result, list) and len(result) > 0:
+                first_item = result[0]
+                if isinstance(first_item, TextContent):
+                    return {"text": first_item.text}
+            return {"text": str(result)}
+        return {"error": "No response from tool"}
+    finally:
+        current_request_access_token.reset(access_token_token)
+        current_request_claims.reset(claims_token)
 
 def convert_openapi_to_json_schema(schema: dict, components: dict) -> dict:
     """Convert OpenAPI schema to JSON Schema format for MCP tools."""
@@ -196,11 +267,15 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Execute API calls based on tool name and arguments."""
     
-    auth_header = get_auth_header()
+    try:
+        auth_header = await get_auth_header()
+    except ValueError as exc:
+        return [TextContent(type="text", text=f"Error: {exc}")]
+
     if not auth_header:
         return [TextContent(
             type="text",
-            text="Error: API_USERNAME and API_PASSWORD environment variables must be set to make API calls"
+            text=get_auth_error_message()
         )]
     
     paths = openapi_spec.get("paths", {})
@@ -246,7 +321,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     full_url = f"{API_BASE_URL}{url}"
     
     headers = {
-        "Authorization": f"Basic {auth_header}",
+        "Authorization": auth_header,
         "Accept": "application/json"
     }
     

@@ -18,6 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY server.py .
+COPY env_config.py .
+COPY resource_server_auth.py .
 COPY mcp_sse_server.py .
 COPY attached_assets/ ./attached_assets/
 

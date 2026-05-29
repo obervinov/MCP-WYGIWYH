@@ -8,7 +8,7 @@ Original repo of [WYGIWYH](https://github.com/eitchtee/WYGIWYH)
 ## ✨ Features
 
 - 🔄 **Dynamic Tool Generation** - Automatically generates 75 MCP tools from OpenAPI specification
-- 🔐 **Secure Authentication** - Bearer token authentication for MCP endpoints + Basic Auth for API access
+- 🔐 **Secure Authentication** - MCP-spec OAuth for MCP endpoints + incoming bearer, Basic, or static Bearer auth for WYGIWYH API access
 - 🚀 **HTTP Streamable Transport** - Full compatibility with n8n and other MCP clients
 - 🐳 **Production-Ready Docker** - Optimized multi-stage build with health checks
 - ⚡ **Async/Await** - Efficient non-blocking API communication
@@ -27,8 +27,7 @@ Original repo of [WYGIWYH](https://github.com/eitchtee/WYGIWYH)
 ### Prerequisites
 
 - Docker & Docker Compose
-- WYGIWYH API credentials
-- MCP Bearer token
+- WYGIWYH API credentials or OAuth client settings
 
 ### Installation
 
@@ -42,7 +41,7 @@ Original repo of [WYGIWYH](https://github.com/eitchtee/WYGIWYH)
    ```bash
    cp .env.example .env
    # Edit .env with your credentials
-   # Don't forget change you WYGIWYH url in server.py
+   # Set WYGIWYH_MCP_API_BASE_URL and OAuth settings for your deployment
    ```
 
 3. **Deploy with Docker**
@@ -65,12 +64,62 @@ Original repo of [WYGIWYH](https://github.com/eitchtee/WYGIWYH)
 Create a `.env` file with the following variables:
 
 ```env
-# WYGIWYH API Credentials
-API_USERNAME=your_email@example.com
-API_PASSWORD=your_password_here
+# WYGIWYH API connection
+WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com
+WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer
 
-# MCP Server Authentication
-MCP_TOKEN=your_mcp_bearer_token_here
+# OAuth authorization server used by MCP clients and by token introspection
+WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com
+WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL=
+WYGIWYH_MCP_OAUTH_INTROSPECTION_URL=
+# Matches the OAuth application configured in WYGIWYH itself
+WYGIWYH_MCP_OAUTH_CLIENT_ID=mcp-wygiwyh
+WYGIWYH_MCP_OAUTH_CLIENT_SECRET=
+WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES=mcp
+WYGIWYH_MCP_PUBLIC_BASE_URL=
+WYGIWYH_MCP_OAUTH_METADATA_TTL_SECONDS=300
+
+# Optional fallback auth modes for direct API access
+WYGIWYH_MCP_API_USERNAME=your_email@example.com
+WYGIWYH_MCP_API_PASSWORD=your_password_here
+WYGIWYH_MCP_API_BEARER_TOKEN=your_access_token_here
+
+```
+
+The server reads only the `WYGIWYH_MCP_*` namespace.
+
+The default mode is `WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer`: the MCP client authenticates against `WYGIWYH`, sends that bearer token to the MCP server, and the MCP server forwards the same token to the WYGIWYH API.
+
+For spec-friendly remote MCP auth, configure `WYGIWYH` as the OAuth authorization server:
+
+1. MCP client hits the MCP server without a token
+2. MCP server returns `401` with `resource_metadata`
+3. MCP client discovers `WYGIWYH` auth metadata
+4. MCP client opens the browser against `WYGIWYH`
+5. `WYGIWYH` handles login/consent and issues an access token
+6. MCP client calls the MCP server with `Authorization: Bearer <token>`
+
+On the `WYGIWYH` side, bootstrap the matching OAuth application with:
+
+```env
+MCP_OAUTH_CLIENT_ID=mcp-wygiwyh
+MCP_OAUTH_CLIENT_SECRET=change-me
+MCP_OAUTH_REDIRECT_URIS=http://127.0.0.1:8765/callback
+```
+
+`WYGIWYH` startup now runs `python manage.py setup_oauth` after migrations, so the OAuth client can be managed entirely from env without a manual Django admin step.
+
+Minimal container example for the new flow:
+
+```bash
+podman run --rm -it \
+  -p 5000:5000 \
+  -e WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com \
+  -e WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer \
+  -e WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com \
+  -e WYGIWYH_MCP_OAUTH_CLIENT_ID=mcp-wygiwyh \
+  -e WYGIWYH_MCP_OAUTH_CLIENT_SECRET=change-me \
+  zot.charafee.cfd:5000/mcp-wygiwyh:keycloak-jwt-mvp
 ```
 
 ## 🌐 n8n Integration
@@ -79,9 +128,7 @@ Configure the n8n MCP Client node:
 
 - **Endpoint:** `http://your-server:5000/`
 - **Transport:** HTTP Streamable
-- **Authentication:** Header Auth
-  - Name: `Authorization`
-  - Value: `Bearer YOUR_MCP_TOKEN`
+- **Authentication:** OAuth 2.0 / Bearer token from `WYGIWYH`
 
 ## 🛠️ Available Tools
 
@@ -157,7 +204,7 @@ spec:
         ports:
         - containerPort: 5000
         env:
-        - name: API_USERNAME
+        - name: WYGIWYH_MCP_API_USERNAME
           valueFrom:
             secretKeyRef:
               name: wygiwyh-secrets
@@ -184,13 +231,16 @@ This displays all 75 generated MCP tools grouped by category.
 
 ## 📊 API Endpoints
 
-- `POST /` - MCP JSON-RPC endpoint (requires Bearer token)
+- `POST /` - MCP JSON-RPC endpoint (requires OAuth Bearer token)
+- `GET /.well-known/oauth-protected-resource` - MCP protected resource metadata
+- `GET /.well-known/oauth-authorization-server` - proxied authorization server metadata
 - `GET /health` - Health check (no authentication)
 
 ## 🔒 Security Features
 
-- ✅ Bearer token authentication for MCP access
-- ✅ Basic Auth for WYGIWYH API requests
+- ✅ OAuth Bearer authentication for MCP access
+- ✅ Incoming bearer passthrough to WYGIWYH API
+- ✅ Basic or static Bearer fallback modes for WYGIWYH API requests
 - ✅ Non-root container user
 - ✅ Secrets managed via environment variables
 - ✅ No exposed credentials in logs
@@ -221,13 +271,20 @@ The server automatically generates MCP tools from the OpenAPI specification:
 │   Client    │                      │             │
 └─────────────┘                      └─────────────┘
                                             │
-                                            │ Basic Auth
+                                           │ Basic / Bearer / OIDC access token
                                             ▼
                                      ┌─────────────┐
                                      │  WYGIWYH    │
                                      │     API     │
                                      └─────────────┘
 ```
+
+For local OIDC mode, the MCP server temporarily becomes an OAuth/OIDC public client:
+
+1. Starts a local callback listener
+2. Sends the user to the provider's authorization endpoint with PKCE
+3. Exchanges the callback code for tokens
+4. Reuses the refresh token to renew access transparently
 
 ## 🐛 Troubleshooting
 
@@ -243,9 +300,9 @@ cat .env
 
 ### Authentication errors
 
-- Ensure `API_USERNAME` is your WYGIWYH email
-- Verify `API_PASSWORD` is correct
-- Check `MCP_TOKEN` matches client configuration
+- If `WYGIWYH_MCP_API_AUTH_MODE=basic`, ensure `WYGIWYH_MCP_API_USERNAME` and `WYGIWYH_MCP_API_PASSWORD` are correct
+- If `WYGIWYH_MCP_API_AUTH_MODE=bearer`, ensure `WYGIWYH_MCP_API_BEARER_TOKEN` is valid and not expired
+- If `WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer`, ensure `WYGIWYH` exposes OAuth metadata and the introspection client credentials are correct
 
 ### Connection refused
 

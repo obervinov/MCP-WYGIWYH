@@ -6,8 +6,7 @@
 
 ### 1. Prerequisites
 - Docker & Docker Compose installed
-- WYGIWYH API credentials
-- MCP Bearer token for authentication
+- WYGIWYH API credentials or OAuth client settings
 
 ### 2. Configuration
 
@@ -19,9 +18,15 @@ cp .env.example .env
 
 Edit `.env` with your credentials:
 ```env
-API_USERNAME=your_email@example.com
-API_PASSWORD=your_password_here
-MCP_TOKEN=your_mcp_bearer_token_here
+WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com
+WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer
+WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com
+WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL=
+WYGIWYH_MCP_OAUTH_INTROSPECTION_URL=
+# Must match the OAuth app configured in WYGIWYH
+WYGIWYH_MCP_OAUTH_CLIENT_ID=mcp-wygiwyh
+WYGIWYH_MCP_OAUTH_CLIENT_SECRET=change-me
+WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES=mcp
 ```
 
 ### 3. Deploy
@@ -38,6 +43,41 @@ Or manually with Docker Compose:
 docker-compose up -d
 ```
 
+### Remote MCP OAuth flow
+
+The default deployment uses `WYGIWYH` as the OAuth authorization server:
+
+```env
+WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer
+WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com
+WYGIWYH_MCP_OAUTH_CLIENT_ID=mcp-wygiwyh
+WYGIWYH_MCP_OAUTH_CLIENT_SECRET=change-me
+WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES=mcp
+```
+
+On the `WYGIWYH` side, configure the matching bootstrap env so the client exists after startup:
+
+```env
+MCP_OAUTH_CLIENT_ID=mcp-wygiwyh
+MCP_OAUTH_CLIENT_SECRET=change-me
+MCP_OAUTH_REDIRECT_URIS=http://127.0.0.1:8765/callback
+```
+
+`WYGIWYH` startup now runs `python manage.py setup_oauth` after `migrate`, so you do not need to create the OAuth application manually in Django admin.
+
+Container example:
+
+```bash
+podman run --rm -it \
+  -p 5000:5000 \
+  -e WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com \
+  -e WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer \
+  -e WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com \
+  -e WYGIWYH_MCP_OAUTH_CLIENT_ID=mcp-wygiwyh \
+  -e WYGIWYH_MCP_OAUTH_CLIENT_SECRET=change-me \
+  zot.charafee.cfd:5000/mcp-wygiwyh:keycloak-jwt-mvp
+```
+
 ## Endpoints
 
 - **Main endpoint:** `http://localhost:5000/`
@@ -48,9 +88,7 @@ docker-compose up -d
 Configure n8n MCP Client:
 - **URL:** `http://your-server:5000/`
 - **Transport:** HTTP Streamable
-- **Authentication:** Header Auth
-  - Name: `Authorization`
-  - Value: `Bearer YOUR_MCP_TOKEN`
+- **Authentication:** OAuth 2.0 / Bearer token from `WYGIWYH`
 
 ## Management Commands
 
@@ -104,9 +142,17 @@ docker push your-username/wygiwyh-mcp-server:latest
 ### AWS ECS / Azure Container Instances / Google Cloud Run
 
 Use the built image with environment variables:
-- `API_USERNAME`
-- `API_PASSWORD`
-- `MCP_TOKEN`
+- `WYGIWYH_MCP_API_BASE_URL`
+- `WYGIWYH_MCP_API_AUTH_MODE`
+- `WYGIWYH_MCP_API_USERNAME`
+- `WYGIWYH_MCP_API_PASSWORD`
+- `WYGIWYH_MCP_API_BEARER_TOKEN`
+- `WYGIWYH_MCP_AUTHORIZATION_SERVER_URL`
+- `WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL`
+- `WYGIWYH_MCP_OAUTH_INTROSPECTION_URL`
+- `WYGIWYH_MCP_OAUTH_CLIENT_ID`
+- `WYGIWYH_MCP_OAUTH_CLIENT_SECRET`
+- `WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES`
 
 ### Kubernetes
 
@@ -131,21 +177,22 @@ spec:
         ports:
         - containerPort: 5000
         env:
-        - name: API_USERNAME
+        - name: WYGIWYH_MCP_API_BASE_URL
+          value: https://your-wygiwyh.example.com
+        - name: WYGIWYH_MCP_API_AUTH_MODE
+          value: incoming_bearer
+        - name: WYGIWYH_MCP_AUTHORIZATION_SERVER_URL
+          value: https://your-wygiwyh.example.com
+        - name: WYGIWYH_MCP_OAUTH_CLIENT_ID
           valueFrom:
             secretKeyRef:
               name: wygiwyh-secrets
-              key: api-username
-        - name: API_PASSWORD
+              key: oauth-client-id
+        - name: WYGIWYH_MCP_OAUTH_CLIENT_SECRET
           valueFrom:
             secretKeyRef:
               name: wygiwyh-secrets
-              key: api-password
-        - name: MCP_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: wygiwyh-secrets
-              key: mcp-token
+              key: oauth-client-secret
         livenessProbe:
           httpGet:
             path: /health
@@ -175,8 +222,9 @@ curl http://localhost:5000/health
 ```
 
 ### API authentication errors
-- Verify `API_USERNAME` and `API_PASSWORD` are correct
-- Ensure credentials are in correct order (email as username)
+- If `WYGIWYH_MCP_API_AUTH_MODE=basic`, verify `WYGIWYH_MCP_API_USERNAME` and `WYGIWYH_MCP_API_PASSWORD`
+- If `WYGIWYH_MCP_API_AUTH_MODE=bearer`, verify `WYGIWYH_MCP_API_BEARER_TOKEN`
+- If `WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer`, verify `WYGIWYH` exposes OAuth metadata and the introspection client credentials are correct
 
 ## Available Tools
 
