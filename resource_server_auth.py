@@ -14,10 +14,18 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from env_config import get_env
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(get_env(name, str(default)).strip())
+    except ValueError:
+        return default
 
 
 @dataclass(frozen=True)
@@ -55,7 +63,7 @@ class OAuthResourceAuthenticator:
             authorization_server_metadata_url=authorization_server_metadata_url,
             required_scopes=required_scopes,
             public_base_url=get_env("PUBLIC_BASE_URL").strip().rstrip("/"),
-            metadata_ttl_seconds=int(get_env("OAUTH_METADATA_TTL_SECONDS", "300").strip()),
+            metadata_ttl_seconds=_int_env("OAUTH_METADATA_TTL_SECONDS", 300),
         )
 
     async def get_authorization_server_metadata(self) -> dict[str, Any]:
@@ -67,6 +75,17 @@ class OAuthResourceAuthenticator:
             raise RuntimeError(
                 "OAuth authorization server metadata is not configured. Set "
                 "WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL."
+            )
+
+        # Only fetch over https (allow http for localhost dev) so a misconfigured
+        # metadata URL can't be pointed at an internal/metadata-service address.
+        parsed = urlparse(settings.authorization_server_metadata_url)
+        if parsed.scheme not in ("http", "https") or (
+            parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1")
+        ):
+            raise RuntimeError(
+                "Authorization server metadata URL must use https "
+                "(http is allowed only for localhost)."
             )
 
         if self._metadata and not self._is_stale(self._metadata_loaded_at, settings):

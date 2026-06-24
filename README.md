@@ -68,48 +68,37 @@ Create a `.env` file with the following variables:
 WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com
 WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer
 
-# OAuth authorization server used by MCP clients and by token introspection
+# OAuth authorization server (WYGIWYH) that MCP clients authenticate against
 WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com
 WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL=
-WYGIWYH_MCP_OAUTH_INTROSPECTION_URL=
-# Matches the OAuth application configured in WYGIWYH itself
-WYGIWYH_MCP_OAUTH_CLIENT_ID=mcp-wygiwyh
-WYGIWYH_MCP_OAUTH_CLIENT_SECRET=
 WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES=mcp
-WYGIWYH_MCP_PUBLIC_BASE_URL=
+
+# Public URL clients use to reach this MCP server (required)
+WYGIWYH_MCP_PUBLIC_BASE_URL=https://your-mcp.example.com
 WYGIWYH_MCP_OAUTH_METADATA_TTL_SECONDS=300
 
-# Optional fallback auth modes for direct API access
+# Optional fallback auth modes for direct API access (instead of incoming_bearer)
 WYGIWYH_MCP_API_USERNAME=your_email@example.com
 WYGIWYH_MCP_API_PASSWORD=your_password_here
 WYGIWYH_MCP_API_BEARER_TOKEN=your_access_token_here
-
 ```
 
 The server reads only the `WYGIWYH_MCP_*` namespace.
 
-The default mode is `WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer`: the MCP client authenticates against `WYGIWYH`, sends that bearer token to the MCP server, and the MCP server forwards the same token to the WYGIWYH API.
+In the default `incoming_bearer` mode, the MCP client authenticates against `WYGIWYH`, sends that bearer token to the MCP server, and the MCP server forwards the same token to the WYGIWYH API, **which validates it**. The MCP server does not introspect or otherwise validate the token itself, so it needs no OAuth client credentials of its own.
 
-For spec-friendly remote MCP auth, configure `WYGIWYH` as the OAuth authorization server:
+> Because validation is delegated to the WYGIWYH API, every WYGIWYH `/api/` route must require authentication — there is no second check in the MCP server.
+
+Remote MCP OAuth flow:
 
 1. MCP client hits the MCP server without a token
 2. MCP server returns `401` with `resource_metadata`
 3. MCP client discovers `WYGIWYH` auth metadata
-4. MCP client opens the browser against `WYGIWYH`
+4. MCP client registers dynamically (DCR) and opens the browser against `WYGIWYH`
 5. `WYGIWYH` handles login/consent and issues an access token
 6. MCP client calls the MCP server with `Authorization: Bearer <token>`
 
-On the `WYGIWYH` side, bootstrap the matching OAuth application with:
-
-```env
-MCP_OAUTH_CLIENT_ID=mcp-wygiwyh
-MCP_OAUTH_CLIENT_SECRET=change-me
-MCP_OAUTH_REDIRECT_URIS=http://127.0.0.1:8765/callback
-```
-
-`WYGIWYH` startup now runs `python manage.py setup_oauth` after migrations, so the OAuth client can be managed entirely from env without a manual Django admin step.
-
-Minimal container example for the new flow:
+Minimal container example:
 
 ```bash
 podman run --rm -it \
@@ -117,9 +106,8 @@ podman run --rm -it \
   -e WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com \
   -e WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer \
   -e WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com \
-  -e WYGIWYH_MCP_OAUTH_CLIENT_ID=mcp-wygiwyh \
-  -e WYGIWYH_MCP_OAUTH_CLIENT_SECRET=change-me \
-  zot.charafee.cfd:5000/mcp-wygiwyh:keycloak-jwt-mvp
+  -e WYGIWYH_MCP_PUBLIC_BASE_URL=https://your-mcp.example.com \
+  wygiwyh-mcp-server:latest
 ```
 
 ## 🌐 n8n Integration
@@ -279,12 +267,10 @@ The server automatically generates MCP tools from the OpenAPI specification:
                                      └─────────────┘
 ```
 
-For local OIDC mode, the MCP server temporarily becomes an OAuth/OIDC public client:
-
-1. Starts a local callback listener
-2. Sends the user to the provider's authorization endpoint with PKCE
-3. Exchanges the callback code for tokens
-4. Reuses the refresh token to renew access transparently
+The MCP server itself is only an OAuth resource server: it advertises metadata
+and forwards the bearer token. The authorization-code + PKCE flow (and any
+dynamic client registration / token refresh) is run by the **MCP client**
+against `WYGIWYH` — the server never holds client credentials or refresh tokens.
 
 ## 🐛 Troubleshooting
 
@@ -302,7 +288,7 @@ cat .env
 
 - If `WYGIWYH_MCP_API_AUTH_MODE=basic`, ensure `WYGIWYH_MCP_API_USERNAME` and `WYGIWYH_MCP_API_PASSWORD` are correct
 - If `WYGIWYH_MCP_API_AUTH_MODE=bearer`, ensure `WYGIWYH_MCP_API_BEARER_TOKEN` is valid and not expired
-- If `WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer`, ensure `WYGIWYH` exposes OAuth metadata and the introspection client credentials are correct
+- If `WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer`, ensure the MCP client obtained a valid `WYGIWYH` token and sends it as `Authorization: Bearer ...`. The token is forwarded to the WYGIWYH API, so a 401/403 from a tool means WYGIWYH rejected the token.
 
 ### Connection refused
 

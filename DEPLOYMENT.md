@@ -22,11 +22,8 @@ WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com
 WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer
 WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com
 WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL=
-WYGIWYH_MCP_OAUTH_INTROSPECTION_URL=
-# Must match the OAuth app configured in WYGIWYH
-WYGIWYH_MCP_OAUTH_CLIENT_ID=mcp-wygiwyh
-WYGIWYH_MCP_OAUTH_CLIENT_SECRET=change-me
 WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES=mcp
+WYGIWYH_MCP_PUBLIC_BASE_URL=https://your-mcp.example.com
 ```
 
 ### 3. Deploy
@@ -45,25 +42,20 @@ docker-compose up -d
 
 ### Remote MCP OAuth flow
 
-The default deployment uses `WYGIWYH` as the OAuth authorization server:
+The default deployment uses `WYGIWYH` as the OAuth authorization server. The MCP
+client authenticates against `WYGIWYH` and sends the resulting bearer token to
+the MCP server, which forwards it to the WYGIWYH API for validation — the MCP
+server holds no OAuth credentials of its own.
 
 ```env
 WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer
 WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com
-WYGIWYH_MCP_OAUTH_CLIENT_ID=mcp-wygiwyh
-WYGIWYH_MCP_OAUTH_CLIENT_SECRET=change-me
 WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES=mcp
+WYGIWYH_MCP_PUBLIC_BASE_URL=https://your-mcp.example.com
 ```
 
-On the `WYGIWYH` side, configure the matching bootstrap env so the client exists after startup:
-
-```env
-MCP_OAUTH_CLIENT_ID=mcp-wygiwyh
-MCP_OAUTH_CLIENT_SECRET=change-me
-MCP_OAUTH_REDIRECT_URIS=http://127.0.0.1:8765/callback
-```
-
-`WYGIWYH` startup now runs `python manage.py setup_oauth` after `migrate`, so you do not need to create the OAuth application manually in Django admin.
+MCP clients that support dynamic client registration self-register against
+`WYGIWYH`; no OAuth application needs to be pre-created for the MCP server.
 
 Container example:
 
@@ -73,9 +65,8 @@ podman run --rm -it \
   -e WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com \
   -e WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer \
   -e WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com \
-  -e WYGIWYH_MCP_OAUTH_CLIENT_ID=mcp-wygiwyh \
-  -e WYGIWYH_MCP_OAUTH_CLIENT_SECRET=change-me \
-  zot.charafee.cfd:5000/mcp-wygiwyh:keycloak-jwt-mvp
+  -e WYGIWYH_MCP_PUBLIC_BASE_URL=https://your-mcp.example.com \
+  wygiwyh-mcp-server:latest
 ```
 
 ## Endpoints
@@ -149,10 +140,8 @@ Use the built image with environment variables:
 - `WYGIWYH_MCP_API_BEARER_TOKEN`
 - `WYGIWYH_MCP_AUTHORIZATION_SERVER_URL`
 - `WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL`
-- `WYGIWYH_MCP_OAUTH_INTROSPECTION_URL`
-- `WYGIWYH_MCP_OAUTH_CLIENT_ID`
-- `WYGIWYH_MCP_OAUTH_CLIENT_SECRET`
 - `WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES`
+- `WYGIWYH_MCP_PUBLIC_BASE_URL`
 
 ### Kubernetes
 
@@ -183,16 +172,8 @@ spec:
           value: incoming_bearer
         - name: WYGIWYH_MCP_AUTHORIZATION_SERVER_URL
           value: https://your-wygiwyh.example.com
-        - name: WYGIWYH_MCP_OAUTH_CLIENT_ID
-          valueFrom:
-            secretKeyRef:
-              name: wygiwyh-secrets
-              key: oauth-client-id
-        - name: WYGIWYH_MCP_OAUTH_CLIENT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: wygiwyh-secrets
-              key: oauth-client-secret
+        - name: WYGIWYH_MCP_PUBLIC_BASE_URL
+          value: https://your-mcp.example.com
         livenessProbe:
           httpGet:
             path: /health
@@ -224,7 +205,7 @@ curl http://localhost:5000/health
 ### API authentication errors
 - If `WYGIWYH_MCP_API_AUTH_MODE=basic`, verify `WYGIWYH_MCP_API_USERNAME` and `WYGIWYH_MCP_API_PASSWORD`
 - If `WYGIWYH_MCP_API_AUTH_MODE=bearer`, verify `WYGIWYH_MCP_API_BEARER_TOKEN`
-- If `WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer`, verify `WYGIWYH` exposes OAuth metadata and the introspection client credentials are correct
+- If `WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer`, verify the MCP client obtained a valid `WYGIWYH` token and sends it as `Authorization: Bearer ...`; the token is forwarded to the WYGIWYH API, so a 401/403 from a tool means WYGIWYH rejected it
 
 ## Available Tools
 

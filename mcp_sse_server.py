@@ -7,16 +7,17 @@ All rights reserved.
 """
 
 import json
+import logging
 from typing import Any
 from starlette.applications import Starlette
 from starlette.responses import Response, JSONResponse, StreamingResponse
 from starlette.routing import Route
-from starlette.middleware import Middleware
-from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 import uvicorn
 from server import app as mcp_server, get_tools_list
 from resource_server_auth import OAuthResourceAuthenticator
+
+logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "WYGIWYH MCP Server"
@@ -25,10 +26,14 @@ resource_authenticator = OAuthResourceAuthenticator()
 
 
 def _get_public_base_url(request: Request) -> str:
+    # Never derive security-relevant URLs from the request Host header: a client
+    # could spoof it and steer the OAuth discovery chain. Require explicit config.
     configured = resource_authenticator.load_settings().public_base_url
-    if configured:
-        return configured
-    return str(request.base_url).rstrip("/")
+    if not configured:
+        raise RuntimeError(
+            "WYGIWYH_MCP_PUBLIC_BASE_URL is not configured."
+        )
+    return configured
 
 
 def _build_protected_resource_metadata_url(request: Request) -> str:
@@ -119,25 +124,25 @@ async def protected_resource_metadata(request: Request):
 
 
 async def authorization_server_metadata(request: Request):
-    """Expose authorization server metadata for MCP clients."""
-    metadata = await resource_authenticator.get_authorization_server_metadata()
+    """Proxy the WYGIWYH authorization server metadata for MCP clients."""
+    try:
+        metadata = await resource_authenticator.get_authorization_server_metadata()
+    except Exception:
+        logger.exception("Failed to fetch authorization server metadata")
+        return JSONResponse(
+            {"error": "upstream_metadata_unavailable",
+             "error_description": "Could not retrieve WYGIWYH authorization server metadata."},
+            status_code=502,
+        )
     return JSONResponse(metadata)
 
 async def handle_root_get(request: Request):
     """Handle GET requests to root - return SSE stream for initialization."""
-    try:
-        incoming_token, _claims = await authenticate_request(request)
-    except RuntimeError as exc:
-        return unauthorized_response(
-            request,
-            error="invalid_token",
-            error_description=str(exc),
-        )
-
+    incoming_token, _ = await authenticate_request(request)
     if not incoming_token:
         return unauthorized_response(request)
-    
-    print(f"SSE connection from {request.client}")
+
+    logger.info("SSE connection from %s", request.client)
     
     # Return SSE stream with server info
     async def event_stream():
@@ -162,120 +167,91 @@ async def handle_root_get(request: Request):
     )
 
 async def handle_root_post(request: Request):
-    """Handle POST requests to root - execute MCP methods."""
-    try:
-        incoming_token, incoming_claims = await authenticate_request(request)
-    except RuntimeError as exc:
-        return unauthorized_response(
-            request,
-            error="invalid_token",
-            error_description=str(exc),
-        )
-
+    """Handle POST requests to root - execute MCP JSON-RPC methods."""
+    incoming_token, _ = await authenticate_request(request)
     if not incoming_token:
         return unauthorized_response(request)
-    
+
+    # Parse the JSON-RPC body exactly once.
     try:
         body = await request.json()
-        print(f"Received JSON-RPC request: {body.get('method', 'unknown')}")
-        
-        method = body.get("method")
-        params = body.get("params", {})
-        request_id = body.get("id")
-        
-        # Handle notifications (no id, no response needed)
-        if request_id is None:
-            print(f"Notification received: {method}")
-            # Notifications don't get a response, just return 200
-            return Response(status_code=200)
-        
-        # Handle different MCP methods
+    except Exception:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": -32700, "message": "Parse error"}},
+            status_code=400,
+        )
+    if not isinstance(body, dict):
+        # Batch requests are not supported by this server.
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": -32600, "message": "Invalid Request"}},
+            status_code=400,
+        )
+
+    method = body.get("method")
+    params = body.get("params") or {}
+    request_id = body.get("id")
+
+    # Notifications (no id) get no response body.
+    if request_id is None:
+        logger.info("Notification received: %s", method)
+        return Response(status_code=200)
+
+    try:
         if method == "initialize":
-            result = {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {
-                    "tools": {}
-                },
-                "serverInfo": {
-                    "name": SERVER_NAME,
-                    "version": SERVER_VERSION,
-                }
-            }
-            return JSONResponse({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": result
-            })
-        
-        elif method == "tools/list":
-            # Get tools from the MCP server
-            tools_list = await get_tools_list()
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "tools": tools_list
-                }
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                },
             })
-        
-        elif method == "tools/call":
-            # Call a tool
+
+        if method == "tools/list":
+            tools_list = await get_tools_list()
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"tools": tools_list},
+            })
+
+        if method == "tools/call":
             tool_name = params.get("name")
             tool_args = params.get("arguments", {})
-            
-            print(f"Calling tool: {tool_name} with args: {tool_args}")
-            
-            # Call the tool using the MCP server
+            logger.info("Calling tool: %s", tool_name)
+
             from server import call_tool_internal
             result = await call_tool_internal(
                 tool_name,
                 tool_args,
                 incoming_access_token=incoming_token,
-                incoming_claims=incoming_claims,
             )
-            
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result)
-                        }
-                    ]
-                }
+                    "content": [{"type": "text", "text": json.dumps(result)}]
+                },
             })
-        
-        else:
-            return JSONResponse({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {
-                    "code": -32601,
-                    "message": f"Method not found: {method}"
-                }
-            }, status_code=400)
-    
-    except Exception as e:
-        print(f"Error handling request: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        error_request_id = None
-        try:
-            body_dict = await request.json()
-            error_request_id = body_dict.get("id")
-        except:
-            pass
-        
+
         return JSONResponse({
             "jsonrpc": "2.0",
-            "id": error_request_id,
-            "error": {
-                "code": -32603,
-                "message": f"Internal error: {str(e)}"
-            }
+            "id": request_id,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        }, status_code=400)
+
+    except Exception:
+        # Log the detail server-side; return a generic error to the client.
+        logger.exception(
+            "Error handling JSON-RPC request (id=%s, method=%s)", request_id, method
+        )
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32603, "message": "Internal error"},
         }, status_code=500)
 
 routes = [
@@ -294,19 +270,21 @@ routes = [
     Route("/health", health_check, methods=["GET"]),
 ]
 
-middleware = [
-    Middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    ),
-]
-
-app = Starlette(routes=routes, middleware=middleware)
+# No CORS middleware: this is a machine-to-machine MCP endpoint, not a browser
+# API. A wildcard origin with credentials would let any site read finance data.
+app = Starlette(routes=routes)
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    # Fail fast on missing required config rather than deriving public URLs from
+    # the request Host header at runtime.
+    if not resource_authenticator.load_settings().public_base_url:
+        raise SystemExit(
+            "WYGIWYH_MCP_PUBLIC_BASE_URL is required (the public URL clients use "
+            "to reach this MCP server)."
+        )
+
     print("\n" + "="*60)
     print("Starting WYGIWYH MCP Server with HTTP Streamable")
     print("="*60)

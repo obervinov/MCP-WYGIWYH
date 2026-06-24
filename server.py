@@ -10,7 +10,7 @@ All rights reserved.
 import json
 import base64
 from contextvars import ContextVar
-from typing import Any
+import logging
 import yaml
 import httpx
 from mcp.server import Server
@@ -25,10 +25,8 @@ current_request_access_token: ContextVar[str | None] = ContextVar(
     "current_request_access_token",
     default=None,
 )
-current_request_claims: ContextVar[dict[str, Any] | None] = ContextVar(
-    "current_request_claims",
-    default=None,
-)
+
+logger = logging.getLogger(__name__)
 
 def get_api_auth_mode() -> str:
     return get_env("API_AUTH_MODE", "incoming_bearer").strip().lower()
@@ -112,11 +110,9 @@ async def call_tool_internal(
     name: str,
     arguments: dict,
     incoming_access_token: str | None = None,
-    incoming_claims: dict[str, Any] | None = None,
 ):
     """Call a tool directly (for HTTP transport)."""
     access_token_token = current_request_access_token.set(incoming_access_token)
-    claims_token = current_request_claims.set(incoming_claims)
     try:
         from mcp.types import TextContent
 
@@ -130,7 +126,6 @@ async def call_tool_internal(
         return {"error": "No response from tool"}
     finally:
         current_request_access_token.reset(access_token_token)
-        current_request_claims.reset(claims_token)
 
 def convert_openapi_to_json_schema(schema: dict, components: dict) -> dict:
     """Convert OpenAPI schema to JSON Schema format for MCP tools."""
@@ -400,10 +395,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             text=f"HTTP Error {status_code}:\n{error_detail}"
         )]
     
-    except Exception as e:
+    except Exception:
+        # Log the detail server-side; don't leak internals (e.g. internal URLs
+        # in httpx errors) to the MCP client.
+        logger.exception("Unexpected error calling the WYGIWYH API")
         return [TextContent(
             type="text",
-            text=f"Error: {type(e).__name__}: {str(e)}"
+            text="Error: the request to the WYGIWYH API failed unexpectedly."
         )]
 
 async def main():
