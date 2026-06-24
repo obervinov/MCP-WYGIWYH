@@ -54,19 +54,21 @@ def _build_www_authenticate_header(
 
 
 async def authenticate_request(request: Request) -> tuple[str | None, dict[str, Any] | None]:
-    """Validate incoming OAuth Bearer token for MCP access."""
+    """Extract the incoming OAuth Bearer token.
+
+    Validation is delegated to the WYGIWYH API, which authenticates the token on
+    every forwarded request, so the MCP server does not introspect it here (and
+    needs no resource-server credentials of its own). A missing token still gets
+    a 401 + WWW-Authenticate challenge so the client starts the OAuth flow.
+    """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return None, None
 
-    try:
-        token = auth_header.split(" ", 1)[1].strip()
-        if not token:
-            return None, None
-        claims = await resource_authenticator.validate_access_token(token)
-        return token, claims
-    except Exception as exc:
-        raise RuntimeError(str(exc)) from exc
+    token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        return None, None
+    return token, {}
 
 
 def unauthorized_response(
