@@ -18,9 +18,12 @@ from mcp.types import Tool, TextContent
 from pydantic import AnyUrl
 import asyncio
 
-from env_config import get_env
+from env_config import get_env, get_env_bool
 
 API_BASE_URL = get_env("API_BASE_URL", "https://your-WYGIWYH.com").rstrip("/")
+# Read-only mode: expose and allow only GET tools, refuse all mutations
+# (POST/PUT/PATCH/DELETE). Defaults to True so a leaked bearer can't move money.
+READ_ONLY = get_env_bool("READ_ONLY", True)
 current_request_access_token: ContextVar[str | None] = ContextVar(
     "current_request_access_token",
     default=None,
@@ -194,7 +197,9 @@ def generate_tools_from_openapi(spec: dict) -> list[Tool]:
         for method, operation in path_item.items():
             if method.upper() not in ["GET", "POST", "PUT", "PATCH", "DELETE"]:
                 continue
-            
+            if READ_ONLY and method.upper() != "GET":
+                continue
+
             operation_id = operation.get("operationId", f"{method}_{path}")
             description = operation.get("description", operation.get("summary", f"{method.upper()} {path}"))
             
@@ -296,7 +301,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             type="text",
             text=f"Error: Tool '{name}' not found in API specification"
         )]
-    
+
+    if READ_ONLY and method != "GET":
+        return [TextContent(
+            type="text",
+            text=(
+                f"Error: read-only mode is enabled; {method} on '{name}' is refused. "
+                "Set WYGIWYH_MCP_READ_ONLY=false to allow mutations."
+            )
+        )]
+
     path_params = {}
     query_params = {}
     body_data = {}
