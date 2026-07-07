@@ -16,14 +16,14 @@ Copy the example environment file and configure it:
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+Edit `.env` with your credentials. The default `basic` mode needs only the API
+credentials and a transport token:
 ```env
 WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com
-WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer
-WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com
-WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL=
-WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES=mcp
-WYGIWYH_MCP_PUBLIC_BASE_URL=https://your-mcp.example.com
+WYGIWYH_MCP_API_AUTH_MODE=basic
+WYGIWYH_MCP_API_USERNAME=your_email@example.com
+WYGIWYH_MCP_API_PASSWORD=your_password_here
+WYGIWYH_MCP_TOKEN=your_secure_transport_token_here
 ```
 
 ### 3. Deploy
@@ -40,12 +40,12 @@ Or manually with Docker Compose:
 docker-compose up -d
 ```
 
-### Remote MCP OAuth flow
+### Remote MCP OAuth flow (opt-in)
 
-The default deployment uses `WYGIWYH` as the OAuth authorization server. The MCP
-client authenticates against `WYGIWYH` and sends the resulting bearer token to
-the MCP server, which forwards it to the WYGIWYH API for validation — the MCP
-server holds no OAuth credentials of its own.
+Set `WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer` to use `WYGIWYH` as the OAuth
+authorization server. The MCP client authenticates against `WYGIWYH` and sends the
+resulting bearer token to the MCP server, which forwards it to the WYGIWYH API for
+validation — the MCP server holds no OAuth credentials of its own.
 
 ```env
 WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer
@@ -134,14 +134,16 @@ docker push your-username/wygiwyh-mcp-server:latest
 
 Use the built image with environment variables:
 - `WYGIWYH_MCP_API_BASE_URL`
-- `WYGIWYH_MCP_API_AUTH_MODE`
+- `WYGIWYH_MCP_API_AUTH_MODE` (default `basic`)
 - `WYGIWYH_MCP_API_USERNAME`
 - `WYGIWYH_MCP_API_PASSWORD`
 - `WYGIWYH_MCP_API_BEARER_TOKEN`
-- `WYGIWYH_MCP_AUTHORIZATION_SERVER_URL`
-- `WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL`
-- `WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES`
-- `WYGIWYH_MCP_PUBLIC_BASE_URL`
+- `WYGIWYH_MCP_TOKEN` (static transport token for basic/bearer modes)
+- `WYGIWYH_MCP_READ_ONLY` (default `false`)
+- `WYGIWYH_MCP_AUTHORIZATION_SERVER_URL` (incoming_bearer only)
+- `WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL` (incoming_bearer only)
+- `WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES` (incoming_bearer only)
+- `WYGIWYH_MCP_PUBLIC_BASE_URL` (required in incoming_bearer only)
 
 ### Kubernetes
 

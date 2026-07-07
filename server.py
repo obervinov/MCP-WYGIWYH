@@ -21,9 +21,11 @@ import asyncio
 from env_config import get_env, get_env_bool
 
 API_BASE_URL = get_env("API_BASE_URL", "https://your-WYGIWYH.com").rstrip("/")
-# Read-only mode: expose and allow only GET tools, refuse all mutations
-# (POST/PUT/PATCH/DELETE). Defaults to True so a leaked bearer can't move money.
-READ_ONLY = get_env_bool("READ_ONLY", True)
+# Read-only mode: when enabled, expose and allow only GET tools and refuse all
+# mutations (POST/PUT/PATCH/DELETE). Opt-in (default False) to preserve the
+# original full-access behaviour; set WYGIWYH_MCP_READ_ONLY=true to harden a
+# deployment so a leaked bearer can't move money.
+READ_ONLY = get_env_bool("READ_ONLY", False)
 current_request_access_token: ContextVar[str | None] = ContextVar(
     "current_request_access_token",
     default=None,
@@ -32,7 +34,10 @@ current_request_access_token: ContextVar[str | None] = ContextVar(
 logger = logging.getLogger(__name__)
 
 def get_api_auth_mode() -> str:
-    return get_env("API_AUTH_MODE", "incoming_bearer").strip().lower()
+    # Default to "basic" so the server behaves like the original out of the box
+    # (static WYGIWYH credentials). The OAuth/DCR pass-through flow is opt-in via
+    # WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer.
+    return get_env("API_AUTH_MODE", "basic").strip().lower()
 
 
 async def get_auth_header() -> str:

@@ -61,35 +61,54 @@ Original repo of [WYGIWYH](https://github.com/eitchtee/WYGIWYH)
 
 ## 🔧 Configuration
 
-Create a `.env` file with the following variables:
+Create a `.env` file. The server reads only the `WYGIWYH_MCP_*` namespace
+(legacy unprefixed `API_USERNAME` / `API_PASSWORD` / `MCP_TOKEN` are still read as
+a fallback for existing deployments).
+
+`WYGIWYH_MCP_API_AUTH_MODE` selects how authentication works. It defaults to
+`basic` — the original behaviour — so no configuration change is required to
+upgrade.
+
+### Default: `basic` mode
+
+The MCP server authenticates to the WYGIWYH API with static credentials, and MCP
+clients present a static shared-secret bearer (`WYGIWYH_MCP_TOKEN`) to reach the
+MCP server.
 
 ```env
-# WYGIWYH API connection
+WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com
+WYGIWYH_MCP_API_AUTH_MODE=basic
+WYGIWYH_MCP_API_USERNAME=your_email@example.com
+WYGIWYH_MCP_API_PASSWORD=your_password_here
+# Static token MCP clients present to this server. If unset, a temporary one is
+# generated at startup and printed to the log.
+WYGIWYH_MCP_TOKEN=your_secure_transport_token_here
+```
+
+`bearer` mode is the same, but the MCP server authenticates to the API with a
+static token (`WYGIWYH_MCP_API_BEARER_TOKEN`) instead of username/password.
+
+### Opt-in: `incoming_bearer` mode (OAuth 2.1 / DCR)
+
+Set `WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer` to let MCP clients authenticate
+directly against WYGIWYH via OAuth. The client's bearer token is forwarded to the
+WYGIWYH API, **which validates it** — the MCP server does not introspect the token
+and needs no OAuth client credentials of its own.
+
+```env
 WYGIWYH_MCP_API_BASE_URL=https://your-wygiwyh.example.com
 WYGIWYH_MCP_API_AUTH_MODE=incoming_bearer
-
-# OAuth authorization server (WYGIWYH) that MCP clients authenticate against
 WYGIWYH_MCP_AUTHORIZATION_SERVER_URL=https://your-wygiwyh.example.com
 WYGIWYH_MCP_AUTHORIZATION_SERVER_METADATA_URL=
 WYGIWYH_MCP_OAUTH_REQUIRED_SCOPES=mcp
-
-# Public URL clients use to reach this MCP server (required)
+# Public URL clients use to reach this MCP server (required in this mode)
 WYGIWYH_MCP_PUBLIC_BASE_URL=https://your-mcp.example.com
 WYGIWYH_MCP_OAUTH_METADATA_TTL_SECONDS=300
-
-# Optional fallback auth modes for direct API access (instead of incoming_bearer)
-WYGIWYH_MCP_API_USERNAME=your_email@example.com
-WYGIWYH_MCP_API_PASSWORD=your_password_here
-WYGIWYH_MCP_API_BEARER_TOKEN=your_access_token_here
 ```
-
-The server reads only the `WYGIWYH_MCP_*` namespace.
-
-In the default `incoming_bearer` mode, the MCP client authenticates against `WYGIWYH`, sends that bearer token to the MCP server, and the MCP server forwards the same token to the WYGIWYH API, **which validates it**. The MCP server does not introspect or otherwise validate the token itself, so it needs no OAuth client credentials of its own.
 
 > Because validation is delegated to the WYGIWYH API, every WYGIWYH `/api/` route must require authentication — there is no second check in the MCP server.
 
-Remote MCP OAuth flow:
+Remote MCP OAuth flow (`incoming_bearer`):
 
 1. MCP client hits the MCP server without a token
 2. MCP server returns `401` with `resource_metadata`
@@ -98,7 +117,10 @@ Remote MCP OAuth flow:
 5. `WYGIWYH` handles login/consent and issues an access token
 6. MCP client calls the MCP server with `Authorization: Bearer <token>`
 
-Minimal container example:
+Set `WYGIWYH_MCP_READ_ONLY=true` in any mode to expose only GET tools and refuse
+mutations.
+
+Minimal container example (opt-in OAuth/DCR mode):
 
 ```bash
 podman run --rm -it \
